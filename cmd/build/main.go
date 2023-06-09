@@ -9,14 +9,14 @@ import (
 )
 
 func main() {
-	err := build.BuildEif("/usr/share/nitro_enclaves/blobs/", "busybox", []string{"/bin/sh", "-c", "echo $FOO"}, map[string]string{"FOO": "hello world"}, "hello.eif")
+	err := build.BuildEif("/usr/share/nitro_enclaves/blobs/", "busybox", []string{"/bin/sh", "-c", "watch echo $FOO"}, map[string]string{"FOO": "hello world"}, "hello.eif")
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	info, err := cli.RunEnclave(&cli.EnclaveConfig{
-		CPUCount:  1,
-		MemoryMib: 100,
+		CPUCount:  2,
+		MemoryMib: 128,
 		EifPath:   "hello.eif",
 	})
 	if err != nil {

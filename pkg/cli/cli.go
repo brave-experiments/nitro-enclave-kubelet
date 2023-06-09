@@ -96,6 +96,7 @@ func run(v any, stop byte, name string, arg ...string) error {
 	cmd := exec.Command(name, arg...)
 	buf := new(bytes.Buffer)
 	cmd.Stdout = buf
+	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return err
 	}
