@@ -12,6 +12,7 @@ RUN go mod download
 COPY . ./
 
 RUN CGO_ENABLED=0 GOOS=linux go build -o /build ./cmd/build 
+RUN CGO_ENABLED=0 GOOS=linux go build -o /vk ./cmd/vk 
 
 FROM amazonlinux:2.0.20230207.0
 
@@ -30,3 +31,4 @@ RUN mkdir /opt/glibc-2.28 && \
 COPY --from=eif_utils /usr/local/cargo/bin/eif_build /bin/eif_build 
 RUN patchelf --set-interpreter /opt/glibc-2.28/lib64/ld-linux-x86-64.so.2 --set-rpath /opt/glibc-2.28/lib64:/usr/lib64 /bin/eif_build
 COPY --from=kubelet /build /bin/build 
+COPY --from=kubelet /vk /bin/vk 

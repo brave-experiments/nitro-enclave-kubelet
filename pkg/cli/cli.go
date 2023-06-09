@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"time"
@@ -11,9 +13,9 @@ import (
 
 type EnclaveConfig struct {
 	EnclaveName string `json:"enclave_name,omitempty"`
-	CPUCount    int    `json:"cpu_count,omitempty"`
+	CPUCount    int64  `json:"cpu_count,omitempty"`
 	CPUIds      []int  `json:"cpu_ids,omitempty"`
-	MemoryMib   int    `json:"memory_mib"`
+	MemoryMib   int64  `json:"memory_mib"`
 	EifPath     string `json:"eif_path"`
 	EnclaveCid  int    `json:"enclave_cid,omitempty"`
 	DebugMode   bool   `json:"debug_mode,omitempty"`
@@ -24,9 +26,9 @@ type EnclaveInfo struct {
 	EnclaveID    string `json:"EnclaveID"`
 	ProcessID    int    `json:"ProcessID"`
 	EnclaveCID   int    `json:"EnclaveCID"`
-	NumberOfCPUs int    `json:"NumberOfCPUs"`
+	NumberOfCPUs int64  `json:"NumberOfCPUs"`
 	CPUIDs       []int  `json:"CPUIDs"`
-	MemoryMiB    int    `json:"MemoryMiB"`
+	MemoryMiB    int64  `json:"MemoryMiB"`
 	State        string `json:"State"`
 	Flags        string `json:"Flags"`
 }
@@ -84,6 +86,40 @@ func TerminateEnclave(enclaveID string) (*TerminationResponse, error) {
 	resp := new(TerminationResponse)
 	err := run(&resp, '{', "nitro-cli", "terminate-enclave", enclaveID)
 	return resp, err
+}
+
+type consoleReadCloser struct {
+	cmd *exec.Cmd
+	pr  *os.File
+	pw  *os.File
+}
+
+func (r consoleReadCloser) Read(p []byte) (n int, err error) {
+	return r.pr.Read(p)
+}
+
+func (r consoleReadCloser) Close() error {
+	if err := r.cmd.Process.Kill(); err != nil {
+		return fmt.Errorf("failed to kill process: %v", err)
+	}
+	if err := r.cmd.Wait(); err != nil {
+		return fmt.Errorf("failed to wait for process to exit: %v", err)
+	}
+	if err := r.pr.Close(); err != nil {
+		return err
+	}
+	return r.pw.Close()
+}
+
+func Console(enclaveID string) (io.ReadCloser, error) {
+	cmd := exec.Command("nitro-cli", "console", "--enclave-id", enclaveID)
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	cmd.Stdout = pw
+	cmd.Stderr = pw
+	return consoleReadCloser{cmd, pr, pw}, nil
 }
 
 func DescribeEif(eif string) (*EifInfo, error) {

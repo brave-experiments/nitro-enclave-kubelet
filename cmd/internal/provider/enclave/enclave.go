@@ -5,13 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand"
 	"os"
-	"strings"
 	"time"
 
+	enclavenode "github.com/brave-experiments/nitro-enclave-kubelet/pkg/node"
 	dto "github.com/prometheus/client_model/go"
-	"github.com/virtual-kubelet/virtual-kubelet/errdefs"
 	"github.com/virtual-kubelet/virtual-kubelet/log"
 	"github.com/virtual-kubelet/virtual-kubelet/node/api"
 	stats "github.com/virtual-kubelet/virtual-kubelet/node/api/statsv1alpha1"
@@ -23,9 +21,9 @@ import (
 
 const (
 	// Provider configuration defaults.
-	defaultCPUCapacity          = "20"
-	defaultMemoryCapacity       = "100Gi"
-	defaultPodCapacity          = "20"
+	defaultCPUCapacity          = "2"
+	defaultMemoryCapacity       = "768Mi"
+	defaultPodCapacity          = "1"
 	defaultNitroEnclaveCapacity = "1"
 
 	// Values used in tracing as attribute keys.
@@ -34,14 +32,9 @@ const (
 	containerNameKey = "containerName"
 )
 
-// See: https://github.com/virtual-kubelet/virtual-kubelet/issues/632
-/*
 var (
-	_ providers.Provider           = (*EnclaveV0Provider)(nil)
-	_ providers.PodMetricsProvider = (*EnclaveV0Provider)(nil)
-	_ node.PodNotifier         = (*EnclaveProvider)(nil)
+	errNotImplemented = fmt.Errorf("not implemented by Nitro Enclave provider")
 )
-*/
 
 // EnclaveProvider implements the virtual-kubelet provider interface and stores pods in memory.
 type EnclaveProvider struct { //nolint:golint
@@ -49,10 +42,11 @@ type EnclaveProvider struct { //nolint:golint
 	operatingSystem    string
 	internalIP         string
 	daemonEndpointPort int32
-	pods               map[string]*v1.Pod
-	config             EnclaveConfig
-	startTime          time.Time
-	notifier           func(*v1.Pod)
+
+	node      *enclavenode.Node
+	config    EnclaveConfig
+	startTime time.Time
+	notifier  func(*v1.Pod)
 }
 
 // EnclaveConfig contains a enclave virtual-kubelet's configurable parameters.
@@ -65,7 +59,7 @@ type EnclaveConfig struct { //nolint:golint
 }
 
 // NewEnclaveProviderEnclaveConfig creates a new EnclaveV0Provider. Enclave legacy provider does not implement the new asynchronous podnotifier interface
-func NewEnclaveProviderEnclaveConfig(config EnclaveConfig, nodeName, operatingSystem string, internalIP string, daemonEndpointPort int32) (*EnclaveProvider, error) {
+func NewEnclaveProviderEnclaveConfig(ctx context.Context, config EnclaveConfig, nodeName, operatingSystem string, internalIP string, daemonEndpointPort int32) (*EnclaveProvider, error) {
 	// set defaults
 	if config.CPU == "" {
 		config.CPU = defaultCPUCapacity
@@ -76,12 +70,18 @@ func NewEnclaveProviderEnclaveConfig(config EnclaveConfig, nodeName, operatingSy
 	if config.Pods == "" {
 		config.Pods = defaultPodCapacity
 	}
+
+	en, err := enclavenode.NewNode(ctx, &enclavenode.NodeConfig{Name: nodeName})
+	if err != nil {
+		return nil, err
+	}
+
 	provider := EnclaveProvider{
 		nodeName:           nodeName,
 		operatingSystem:    operatingSystem,
 		internalIP:         internalIP,
 		daemonEndpointPort: daemonEndpointPort,
-		pods:               make(map[string]*v1.Pod),
+		node:               en,
 		config:             config,
 		startTime:          time.Now(),
 	}
@@ -90,13 +90,13 @@ func NewEnclaveProviderEnclaveConfig(config EnclaveConfig, nodeName, operatingSy
 }
 
 // NewEnclaveProvider creates a new EnclaveProvider, which implements the PodNotifier interface
-func NewEnclaveProvider(providerConfig, nodeName, operatingSystem string, internalIP string, daemonEndpointPort int32) (*EnclaveProvider, error) {
+func NewEnclaveProvider(ctx context.Context, providerConfig, nodeName, operatingSystem string, internalIP string, daemonEndpointPort int32) (*EnclaveProvider, error) {
 	config, err := loadConfig(providerConfig, nodeName)
 	if err != nil {
 		return nil, err
 	}
 
-	return NewEnclaveProviderEnclaveConfig(config, nodeName, operatingSystem, internalIP, daemonEndpointPort)
+	return NewEnclaveProviderEnclaveConfig(ctx, config, nodeName, operatingSystem, internalIP, daemonEndpointPort)
 }
 
 // loadConfig loads the given json configuration files.
@@ -140,7 +140,7 @@ func loadConfig(providerConfig, nodeName string) (config EnclaveConfig, err erro
 	return config, nil
 }
 
-// CreatePod accepts a Pod definition and stores it in memory.
+// CreatePod accepts a Pod definition and launches it as an enclave
 func (p *EnclaveProvider) CreatePod(ctx context.Context, pod *v1.Pod) error {
 	ctx, span := trace.StartSpan(ctx, "CreatePod")
 	defer span.End()
@@ -150,48 +150,18 @@ func (p *EnclaveProvider) CreatePod(ctx context.Context, pod *v1.Pod) error {
 
 	log.G(ctx).Infof("receive CreatePod %q", pod.Name)
 
-	key, err := buildKey(pod)
+	enclavePod, err := enclavenode.NewPod(ctx, p.node, pod)
 	if err != nil {
+		log.G(ctx).Errorf("Failed to create pod: %v.\n", err)
 		return err
 	}
 
-	now := metav1.NewTime(time.Now())
-	pod.Status = v1.PodStatus{
-		Phase:     v1.PodRunning,
-		HostIP:    "1.2.3.4",
-		PodIP:     "5.6.7.8",
-		StartTime: &now,
-		Conditions: []v1.PodCondition{
-			{
-				Type:   v1.PodInitialized,
-				Status: v1.ConditionTrue,
-			},
-			{
-				Type:   v1.PodReady,
-				Status: v1.ConditionTrue,
-			},
-			{
-				Type:   v1.PodScheduled,
-				Status: v1.ConditionTrue,
-			},
-		},
+	err = enclavePod.Start(ctx)
+	if err != nil {
+		log.G(ctx).Errorf("Failed to start pod: %v.\n", err)
+		return err
 	}
 
-	for _, container := range pod.Spec.Containers {
-		pod.Status.ContainerStatuses = append(pod.Status.ContainerStatuses, v1.ContainerStatus{
-			Name:         container.Name,
-			Image:        container.Image,
-			Ready:        true,
-			RestartCount: 0,
-			State: v1.ContainerState{
-				Running: &v1.ContainerStateRunning{
-					StartedAt: now,
-				},
-			},
-		})
-	}
-
-	p.pods[key] = pod
 	p.notifier(pod)
 
 	return nil
@@ -207,18 +177,10 @@ func (p *EnclaveProvider) UpdatePod(ctx context.Context, pod *v1.Pod) error {
 
 	log.G(ctx).Infof("receive UpdatePod %q", pod.Name)
 
-	key, err := buildKey(pod)
-	if err != nil {
-		return err
-	}
-
-	p.pods[key] = pod
-	p.notifier(pod)
-
-	return nil
+	return errNotImplemented
 }
 
-// DeletePod deletes the specified pod out of memory.
+// DeletePod deletes the pod, terminating the running enclave.
 func (p *EnclaveProvider) DeletePod(ctx context.Context, pod *v1.Pod) (err error) {
 	ctx, span := trace.StartSpan(ctx, "DeletePod")
 	defer span.End()
@@ -228,30 +190,16 @@ func (p *EnclaveProvider) DeletePod(ctx context.Context, pod *v1.Pod) (err error
 
 	log.G(ctx).Infof("receive DeletePod %q", pod.Name)
 
-	key, err := buildKey(pod)
+	enclavePod, err := p.node.GetPod(pod.Namespace, pod.Name)
 	if err != nil {
+		log.G(ctx).Errorf("Failed to get pod: %v.\n", err)
 		return err
 	}
 
-	if _, exists := p.pods[key]; !exists {
-		return errdefs.NotFound("pod not found")
-	}
-
-	now := metav1.Now()
-	delete(p.pods, key)
-	pod.Status.Phase = v1.PodSucceeded
-	pod.Status.Reason = "EnclaveProviderPodDeleted"
-
-	for idx := range pod.Status.ContainerStatuses {
-		pod.Status.ContainerStatuses[idx].Ready = false
-		pod.Status.ContainerStatuses[idx].State = v1.ContainerState{
-			Terminated: &v1.ContainerStateTerminated{
-				Message:    "Enclave provider terminated container upon deletion",
-				FinishedAt: now,
-				Reason:     "EnclaveProviderPodContainerDeleted",
-				StartedAt:  pod.Status.ContainerStatuses[idx].State.Running.StartedAt,
-			},
-		}
+	err = enclavePod.Stop()
+	if err != nil {
+		log.G(ctx).Errorf("Failed to stop pod: %v.\n", err)
+		return err
 	}
 
 	p.notifier(pod)
@@ -259,7 +207,7 @@ func (p *EnclaveProvider) DeletePod(ctx context.Context, pod *v1.Pod) (err error
 	return nil
 }
 
-// GetPod returns a pod by name that is stored in memory.
+// GetPod returns a pod by name that is running as an enclave
 func (p *EnclaveProvider) GetPod(ctx context.Context, namespace, name string) (pod *v1.Pod, err error) {
 	ctx, span := trace.StartSpan(ctx, "GetPod")
 	defer func() {
@@ -272,15 +220,19 @@ func (p *EnclaveProvider) GetPod(ctx context.Context, namespace, name string) (p
 
 	log.G(ctx).Infof("receive GetPod %q", name)
 
-	key, err := buildKeyFromNames(namespace, name)
+	enclavePod, err := p.node.GetPod(namespace, name)
 	if err != nil {
+		log.G(ctx).Errorf("Failed to get pod: %v.\n", err)
 		return nil, err
 	}
 
-	if pod, ok := p.pods[key]; ok {
-		return pod, nil
+	spec, err := enclavePod.GetSpec()
+	if err != nil {
+		log.G(ctx).Errorf("Failed to get pod spec: %v.\n", err)
+		return nil, err
 	}
-	return nil, errdefs.NotFoundf("pod \"%s/%s\" is not known to the provider", namespace, name)
+
+	return spec, nil
 }
 
 // GetContainerLogs retrieves the logs of a container by name from the provider.
@@ -292,7 +244,8 @@ func (p *EnclaveProvider) GetContainerLogs(ctx context.Context, namespace, podNa
 	ctx = addAttributes(ctx, span, namespaceKey, namespace, nameKey, podName, containerNameKey, containerName)
 
 	log.G(ctx).Infof("receive GetContainerLogs %q", podName)
-	return io.NopCloser(strings.NewReader("")), nil
+
+	return p.node.GetContainerLogs(namespace, podName, containerName, opts)
 }
 
 // RunInContainer executes a command in a container in the pod, copying data
@@ -335,13 +288,29 @@ func (p *EnclaveProvider) GetPods(ctx context.Context) ([]*v1.Pod, error) {
 
 	log.G(ctx).Info("receive GetPods")
 
-	var pods []*v1.Pod
-
-	for _, pod := range p.pods {
-		pods = append(pods, pod)
+	pods, err := p.node.GetPods()
+	if err != nil {
+		log.G(ctx).Errorf("Failed to get pods: %v.\n", err)
+		return nil, err
 	}
 
-	return pods, nil
+	var result []*v1.Pod
+	var podNames []string
+
+	for _, pod := range pods {
+		spec, err := pod.GetSpec()
+		if err != nil {
+			log.G(ctx).Errorf("Failed to get pod spec: %v.\n", err)
+			continue
+		}
+
+		result = append(result, spec)
+		podNames = append(podNames, fmt.Sprintf("%s/%s", spec.Namespace, spec.Name))
+	}
+
+	log.G(ctx).Info("Responding to GetPods: %+v.\n", podNames)
+
+	return result, nil
 }
 
 func (p *EnclaveProvider) ConfigureNode(ctx context.Context, n *v1.Node) { //nolint:golint
@@ -450,232 +419,17 @@ func (p *EnclaveProvider) nodeDaemonEndpoints() v1.NodeDaemonEndpoints {
 	}
 }
 
-// GetStatsSummary returns dummy stats for all pods known by this provider.
-func (p *EnclaveProvider) GetStatsSummary(ctx context.Context) (*stats.Summary, error) {
-	var span trace.Span
-	ctx, span = trace.StartSpan(ctx, "GetStatsSummary") //nolint: ineffassign,staticcheck
-	defer span.End()
-
-	// Grab the current timestamp so we can report it as the time the stats were generated.
-	time := metav1.NewTime(time.Now())
-
-	// Create the Summary object that will later be populated with node and pod stats.
-	res := &stats.Summary{}
-
-	// Populate the Summary object with basic node stats.
-	res.Node = stats.NodeStats{
-		NodeName:  p.nodeName,
-		StartTime: metav1.NewTime(p.startTime),
-	}
-
-	// Populate the Summary object with dummy stats for each pod known by this provider.
-	for _, pod := range p.pods {
-		var (
-			// totalUsageNanoCores will be populated with the sum of the values of UsageNanoCores computes across all containers in the pod.
-			totalUsageNanoCores uint64
-			// totalUsageBytes will be populated with the sum of the values of UsageBytes computed across all containers in the pod.
-			totalUsageBytes uint64
-		)
-
-		// Create a PodStats object to populate with pod stats.
-		pss := stats.PodStats{
-			PodRef: stats.PodReference{
-				Name:      pod.Name,
-				Namespace: pod.Namespace,
-				UID:       string(pod.UID),
-			},
-			StartTime: pod.CreationTimestamp,
-		}
-
-		// Iterate over all containers in the current pod to compute dummy stats.
-		for _, container := range pod.Spec.Containers {
-			// Grab a dummy value to be used as the total CPU usage.
-			// The value should fit a uint32 in order to avoid overflows later on when computing pod stats.
-
-			/* #nosec */
-			dummyUsageNanoCores := uint64(rand.Uint32())
-			totalUsageNanoCores += dummyUsageNanoCores
-			// Create a dummy value to be used as the total RAM usage.
-			// The value should fit a uint32 in order to avoid overflows later on when computing pod stats.
-
-			/* #nosec */
-			dummyUsageBytes := uint64(rand.Uint32())
-			totalUsageBytes += dummyUsageBytes
-			// Append a ContainerStats object containing the dummy stats to the PodStats object.
-			pss.Containers = append(pss.Containers, stats.ContainerStats{
-				Name:      container.Name,
-				StartTime: pod.CreationTimestamp,
-				CPU: &stats.CPUStats{
-					Time:           time,
-					UsageNanoCores: &dummyUsageNanoCores,
-				},
-				Memory: &stats.MemoryStats{
-					Time:       time,
-					UsageBytes: &dummyUsageBytes,
-				},
-			})
-		}
-
-		// Populate the CPU and RAM stats for the pod and append the PodsStats object to the Summary object to be returned.
-		pss.CPU = &stats.CPUStats{
-			Time:           time,
-			UsageNanoCores: &totalUsageNanoCores,
-		}
-		pss.Memory = &stats.MemoryStats{
-			Time:       time,
-			UsageBytes: &totalUsageBytes,
-		}
-		res.Pods = append(res.Pods, pss)
-	}
-
-	// Return the dummy stats.
-	return res, nil
-}
-
-func (p *EnclaveProvider) generateEnclaveMetrics(metricsMap map[string][]*dto.Metric, resourceType string, label []*dto.LabelPair) map[string][]*dto.Metric {
-	var (
-		cpuMetricSuffix    = "_cpu_usage_seconds_total"
-		memoryMetricSuffix = "_memory_working_set_bytes"
-		dummyValue         = float64(100)
-	)
-
-	if metricsMap == nil {
-		metricsMap = map[string][]*dto.Metric{}
-	}
-
-	finalCpuMetricName := resourceType + cpuMetricSuffix
-	finalMemoryMetricName := resourceType + memoryMetricSuffix
-
-	newCPUMetric := dto.Metric{
-		Label: label,
-		Counter: &dto.Counter{
-			Value: &dummyValue,
-		},
-	}
-	newMemoryMetric := dto.Metric{
-		Label: label,
-		Gauge: &dto.Gauge{
-			Value: &dummyValue,
-		},
-	}
-	// if metric family exists add to metric array
-	if cpuMetrics, ok := metricsMap[finalCpuMetricName]; ok {
-		metricsMap[finalCpuMetricName] = append(cpuMetrics, &newCPUMetric)
-	} else {
-		metricsMap[finalCpuMetricName] = []*dto.Metric{&newCPUMetric}
-	}
-	if memoryMetrics, ok := metricsMap[finalMemoryMetricName]; ok {
-		metricsMap[finalMemoryMetricName] = append(memoryMetrics, &newMemoryMetric)
-	} else {
-		metricsMap[finalMemoryMetricName] = []*dto.Metric{&newMemoryMetric}
-	}
-
-	return metricsMap
-}
-
-func (p *EnclaveProvider) getMetricType(metricName string) *dto.MetricType {
-	var (
-		dtoCounterMetricType = dto.MetricType_COUNTER
-		dtoGaugeMetricType   = dto.MetricType_GAUGE
-		cpuMetricSuffix      = "_cpu_usage_seconds_total"
-		memoryMetricSuffix   = "_memory_working_set_bytes"
-	)
-	if strings.HasSuffix(metricName, cpuMetricSuffix) {
-		return &dtoCounterMetricType
-	}
-	if strings.HasSuffix(metricName, memoryMetricSuffix) {
-		return &dtoGaugeMetricType
-	}
-
-	return nil
-}
-
-func (p *EnclaveProvider) GetMetricsResource(ctx context.Context) ([]*dto.MetricFamily, error) {
-	var span trace.Span
-	ctx, span = trace.StartSpan(ctx, "GetMetricsResource") //nolint: ineffassign,staticcheck
-	defer span.End()
-
-	var (
-		nodeNameStr      = "NodeName"
-		podNameStr       = "PodName"
-		containerNameStr = "containerName"
-	)
-	nodeLabels := []*dto.LabelPair{
-		{
-			Name:  &nodeNameStr,
-			Value: &p.nodeName,
-		},
-	}
-
-	metricsMap := p.generateEnclaveMetrics(nil, "node", nodeLabels)
-	for _, pod := range p.pods {
-		podLabels := []*dto.LabelPair{
-			{
-				Name:  &nodeNameStr,
-				Value: &p.nodeName,
-			},
-			{
-				Name:  &podNameStr,
-				Value: &pod.Name,
-			},
-		}
-		metricsMap = p.generateEnclaveMetrics(metricsMap, "pod", podLabels)
-		for _, container := range pod.Spec.Containers {
-			containerLabels := []*dto.LabelPair{
-				{
-					Name:  &nodeNameStr,
-					Value: &p.nodeName,
-				},
-				{
-					Name:  &podNameStr,
-					Value: &pod.Name,
-				},
-				{
-					Name:  &containerNameStr,
-					Value: &container.Name,
-				},
-			}
-			metricsMap = p.generateEnclaveMetrics(metricsMap, "container", containerLabels)
-		}
-	}
-
-	res := []*dto.MetricFamily{}
-	for metricName := range metricsMap {
-		tempName := metricName
-		tempMetrics := metricsMap[tempName]
-
-		metricFamily := dto.MetricFamily{
-			Name:   &tempName,
-			Type:   p.getMetricType(tempName),
-			Metric: tempMetrics,
-		}
-		res = append(res, &metricFamily)
-	}
-
-	return res, nil
-}
-
 // NotifyPods is called to set a pod notifier callback function. This should be called before any operations are done
 // within the provider.
 func (p *EnclaveProvider) NotifyPods(ctx context.Context, notifier func(*v1.Pod)) {
 	p.notifier = notifier
 }
 
-func buildKeyFromNames(namespace string, name string) (string, error) {
-	return fmt.Sprintf("%s-%s", namespace, name), nil
+func (p *EnclaveProvider) GetMetricsResource(ctx context.Context) ([]*dto.MetricFamily, error) {
+	return nil, errNotImplemented
 }
-
-// buildKey is a helper for building the "key" for the providers pod store.
-func buildKey(pod *v1.Pod) (string, error) {
-	if pod.ObjectMeta.Namespace == "" {
-		return "", fmt.Errorf("pod namespace not found")
-	}
-
-	if pod.ObjectMeta.Name == "" {
-		return "", fmt.Errorf("pod name not found")
-	}
-
-	return buildKeyFromNames(pod.ObjectMeta.Namespace, pod.ObjectMeta.Name)
+func (p *EnclaveProvider) GetStatsSummary(ctx context.Context) (*stats.Summary, error) {
+	return nil, errNotImplemented
 }
 
 // addAttributes adds the specified attributes to the provided span.
