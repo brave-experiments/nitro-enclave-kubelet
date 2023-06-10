@@ -3,11 +3,14 @@ package node
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 
 	"github.com/brave-experiments/nitro-enclave-kubelet/pkg/build"
 	"github.com/brave-experiments/nitro-enclave-kubelet/pkg/cli"
+	"github.com/brave-experiments/nitro-enclave-kubelet/pkg/utils/nitro"
+	"github.com/mdlayher/vsock"
 	"github.com/virtual-kubelet/virtual-kubelet/log"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -24,6 +27,11 @@ const (
 	enclaveStateRunning     = "RUNNING"
 )
 
+type portMapping struct {
+	containerPort int32
+	hostPort      int32
+}
+
 // Pod is the representation of a Kubernetes pod as a Nitro Enclave.
 type Pod struct {
 	// Kubernetes pod properties.
@@ -36,7 +44,11 @@ type Pod struct {
 	config     cli.EnclaveConfig
 	image      string
 	node       *Node
+	ports      []portMapping
 	containers map[string]*container
+
+	// Utilities
+	listeners []net.Listener
 }
 
 // NewPod creates a new Kubernetes pod as a Nitro Enclave.
@@ -47,6 +59,7 @@ func NewPod(ctx context.Context, node *Node, pod *corev1.Pod) (*Pod, error) {
 		name:       pod.Name,
 		uid:        pod.UID,
 		node:       node,
+		ports:      make([]portMapping, 0),
 		containers: make(map[string]*container),
 	}
 
@@ -68,6 +81,13 @@ func NewPod(ctx context.Context, node *Node, pod *corev1.Pod) (*Pod, error) {
 		// Add the container's resource requirements to its pod's total resource requirements.
 		nitroPod.config.CPUCount += cntr.definition.Cpu
 		nitroPod.config.MemoryMib += cntr.definition.Memory
+
+		for _, port := range containerSpec.Ports {
+			nitroPod.ports = append(nitroPod.ports, portMapping{
+				containerPort: port.ContainerPort,
+				hostPort:      port.HostPort,
+			})
+		}
 
 		// Insert the container to its pod.
 		nitroPod.containers[containerSpec.Name] = cntr
@@ -133,8 +153,36 @@ func (pod *Pod) Start(ctx context.Context) error {
 		err = fmt.Errorf("failed to run enclave: %v", err)
 		return err
 	}
-
 	log.G(ctx).Infof("launched enclave %+v", info)
+
+	// Start the TCP proxies
+	for _, mapping := range pod.ports {
+		proxy := nitro.TCPProxy(uint32(info.EnclaveCID), uint32(mapping.containerPort))
+		listener, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", mapping.hostPort))
+		if err != nil {
+			log.G(ctx).Errorf("failed to start proxy listener")
+			continue
+		}
+		pod.listeners = append(pod.listeners, listener)
+		proxy.Serve(listener)
+	}
+
+	// Start the log server
+	// FIXME don't just write logs to stdout
+	logPort := uint32(info.EnclaveCID + 10000)
+	listener, err := vsock.Listen(logPort, &vsock.Config{})
+	if err != nil {
+		log.G(ctx).Errorf("failed to start log server listener")
+	} else {
+		pod.listeners = append(pod.listeners, listener)
+		logserve := nitro.NewVsockLogServer(ctx, os.Stdout, logPort)
+		go func() {
+			if err := logserve.Serve(listener); err != nil {
+				log.G(ctx).Errorf("failed to start log server")
+			}
+		}()
+	}
+
 	// Save the enclave info
 	pod.info = *info
 
@@ -143,10 +191,18 @@ func (pod *Pod) Start(ctx context.Context) error {
 
 // Stop stops a running Kubernetes pod running as an enclave.
 func (pod *Pod) Stop() error {
-	_, err := cli.TerminateEnclave(pod.info.EnclaveID)
-	if err != nil {
-		err = fmt.Errorf("failed to stop enclave: %v", err)
-		return err
+	if pod.GetStatus().Phase == corev1.PodRunning {
+		_, err := cli.TerminateEnclave(pod.info.EnclaveID)
+		if err != nil {
+			err = fmt.Errorf("failed to stop enclave: %v", err)
+			return err
+		}
+	}
+
+	if len(pod.listeners) > 0 {
+		for _, listener := range pod.listeners {
+			listener.Close()
+		}
 	}
 
 	// Remove the pod from its node.
@@ -229,20 +285,31 @@ func (pod *Pod) GetSpec() (*corev1.Pod, error) {
 
 // GetStatus returns the status of a Kubernetes pod running as an enclave.
 func (pod *Pod) GetStatus() corev1.PodStatus {
+	status := corev1.PodStatus{Phase: corev1.PodUnknown}
 	enclaves, err := cli.DescribeEnclaves()
 	if err != nil {
-		return corev1.PodStatus{Phase: corev1.PodUnknown}
+		return status
 	}
 
 	for _, info := range enclaves {
 		if info.EnclaveName == pod.buildEnclaveNameTag() {
 			if info.State == enclaveStateRunning || info.State == enclaveStateTerminating {
-				return corev1.PodStatus{Phase: corev1.PodRunning}
+				status.Phase = corev1.PodRunning
+				status.HostIP = pod.node.ip
+				status.PodIP = pod.node.ip
+				status.Conditions = []corev1.PodCondition{
+					corev1.PodCondition{Type: corev1.PodInitialized, Status: "True"},
+					corev1.PodCondition{Type: corev1.PodReady, Status: "True"},
+					corev1.PodCondition{Type: corev1.ContainersReady, Status: "True"},
+					corev1.PodCondition{Type: corev1.PodScheduled, Status: "True"},
+				}
+				return status
 			}
 		}
 	}
 
-	return corev1.PodStatus{Phase: corev1.PodFailed}
+	status.Phase = corev1.PodFailed
+	return status
 }
 
 // buildEnclaveNameTag returns the enclave name tag for this pod.

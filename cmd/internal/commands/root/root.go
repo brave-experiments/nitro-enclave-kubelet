@@ -21,9 +21,11 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"time"
 
 	"github.com/brave-experiments/nitro-enclave-kubelet/cmd/internal/provider"
 	"github.com/brave-experiments/nitro-enclave-kubelet/internal/manager"
+	"github.com/brave-experiments/nitro-enclave-kubelet/pkg/utils/nitro"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/virtual-kubelet/virtual-kubelet/errdefs"
@@ -33,6 +35,9 @@ import (
 	"github.com/virtual-kubelet/virtual-kubelet/node/nodeutil"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apiserver/pkg/server/dynamiccertificates"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 // NewCommand creates a new top-level command.
@@ -74,10 +79,23 @@ func runRootCommand(ctx context.Context, s *provider.Store, c Opts) error {
 		}
 	}
 
-	fmt.Println("here")
-
+	var config *rest.Config
+	var err error
 	// Ensure API client.
-	clientSet, err := nodeutil.ClientsetFromEnv(c.KubeConfigPath)
+	if c.KubeConfigPath != "" {
+		config, err = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+			&clientcmd.ClientConfigLoadingRules{ExplicitPath: c.KubeConfigPath},
+			&clientcmd.ConfigOverrides{},
+		).ClientConfig()
+	} else {
+		config, err = rest.InClusterConfig()
+	}
+
+	if err != nil {
+		return errors.Wrap(err, "error getting rest client config")
+	}
+
+	clientSet, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return err
 	}
@@ -116,6 +134,8 @@ func runRootCommand(ctx context.Context, s *provider.Store, c Opts) error {
 	if err != nil {
 		return err
 	}
+
+	fmt.Println("apiConfig %+v", apiConfig)
 
 	cm, err := nodeutil.NewNode(c.NodeName, newProvider, func(cfg *nodeutil.NodeConfig) error {
 		cfg.KubeconfigPath = c.KubeConfigPath
@@ -161,6 +181,17 @@ func runRootCommand(ctx context.Context, s *provider.Store, c Opts) error {
 	}))
 
 	go cm.Run(ctx) //nolint:errcheck
+
+	log.G(ctx).Debug("starting serve open proxy")
+	go func() {
+		if err := nitro.ServeOpenProxy(
+			ctx,
+			8080,
+			10*time.Second,
+		); err != nil {
+			log.G(ctx).Error("failed to start open proxy")
+		}
+	}()
 
 	defer func() {
 		log.G(ctx).Debug("Waiting for controllers to be done")

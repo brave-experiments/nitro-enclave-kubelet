@@ -48,10 +48,11 @@ func newContainer(spec *corev1.Container) (*container, error) {
 
 	// Translate the Kubernetes container spec to a container definition.
 	cntr.definition = containerDefinition{
-		Name:       spec.Name,
-		Image:      spec.Image,
-		EntryPoint: spec.Command,
-		Command:    spec.Args,
+		Name:        spec.Name,
+		Image:       spec.Image,
+		EntryPoint:  spec.Command,
+		Command:     spec.Args,
+		Environment: make(map[string]string),
 	}
 
 	// Add environment variables.

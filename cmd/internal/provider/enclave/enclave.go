@@ -71,7 +71,7 @@ func NewEnclaveProviderEnclaveConfig(ctx context.Context, config EnclaveConfig, 
 		config.Pods = defaultPodCapacity
 	}
 
-	en, err := enclavenode.NewNode(ctx, &enclavenode.NodeConfig{Name: nodeName})
+	en, err := enclavenode.NewNode(ctx, &enclavenode.NodeConfig{Name: nodeName}, internalIP)
 	if err != nil {
 		return nil, err
 	}
@@ -162,6 +162,7 @@ func (p *EnclaveProvider) CreatePod(ctx context.Context, pod *v1.Pod) error {
 		return err
 	}
 
+	pod.Status = enclavePod.GetStatus()
 	p.notifier(pod)
 
 	return nil
@@ -177,6 +178,7 @@ func (p *EnclaveProvider) UpdatePod(ctx context.Context, pod *v1.Pod) error {
 
 	log.G(ctx).Infof("receive UpdatePod %q", pod.Name)
 
+	// TODO add limited support to allow recovering from kubelet restart?
 	return errNotImplemented
 }
 
@@ -331,8 +333,9 @@ func (p *EnclaveProvider) ConfigureNode(ctx context.Context, n *v1.Node) { //nol
 	}
 	n.Status.NodeInfo.OperatingSystem = os
 	n.Status.NodeInfo.Architecture = "amd64"
-	n.ObjectMeta.Labels["alpha.service-controller.kubernetes.io/exclude-balancer"] = "true"
-	n.ObjectMeta.Labels["node.kubernetes.io/exclude-from-external-load-balancers"] = "true"
+	delete(n.ObjectMeta.Labels, "kubernetes.io/role")
+	//n.ObjectMeta.Labels["alpha.service-controller.kubernetes.io/exclude-balancer"] = "true"
+	//n.ObjectMeta.Labels["node.kubernetes.io/exclude-from-external-load-balancers"] = "true"
 }
 
 // Capacity returns a resource list containing the capacity limits.

@@ -20,16 +20,18 @@ type NodeConfig struct {
 // Node represents an enclave enabled node.
 type Node struct {
 	name string
+	ip   string
 	pods map[string]*Pod
 	sync.RWMutex
 }
 
 // NewNode creates a new Node object.
-func NewNode(ctx context.Context, config *NodeConfig) (*Node, error) {
+func NewNode(ctx context.Context, config *NodeConfig, internalIP string) (*Node, error) {
 	// Initialize the node.
 	node := &Node{
 		name: config.Name,
 		pods: make(map[string]*Pod),
+		ip:   internalIP,
 	}
 
 	// Load existing pod state from enclaves to the local cache.
@@ -154,6 +156,9 @@ func (n *Node) GetContainerLogs(namespace, podName, containerName string, opts a
 		return nil, errdefs.NotFoundf("pod %s/%s is not found", namespace, podName)
 	}
 
+	// TODO add support for logging server, merge with console when available
+	// FIXME bunch of weird bugs atm, switch to writing to a file in the background
+	// FIXME only use console when enclave is running in debug mode
 	r, err := cli.Console(pod.info.EnclaveID)
 	if err != nil {
 		return nil, err

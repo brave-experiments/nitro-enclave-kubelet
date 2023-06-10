@@ -84,7 +84,7 @@ func DescribeEnclaves() ([]EnclaveInfo, error) {
 
 func TerminateEnclave(enclaveID string) (*TerminationResponse, error) {
 	resp := new(TerminationResponse)
-	err := run(&resp, '{', "nitro-cli", "terminate-enclave", enclaveID)
+	err := run(&resp, '{', "nitro-cli", "terminate-enclave", "--enclave-id", enclaveID)
 	return resp, err
 }
 
@@ -119,6 +119,10 @@ func Console(enclaveID string) (io.ReadCloser, error) {
 	}
 	cmd.Stdout = pw
 	cmd.Stderr = pw
+
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
 	return consoleReadCloser{cmd, pr, pw}, nil
 }
 
