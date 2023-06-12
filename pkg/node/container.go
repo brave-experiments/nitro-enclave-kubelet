@@ -1,6 +1,7 @@
 package node
 
 import (
+	"strings"
 	"time"
 
 	"github.com/brave-experiments/nitro-enclave-kubelet/pkg/utils/smt"
@@ -58,7 +59,10 @@ func newContainer(spec *corev1.Container) (*container, error) {
 	// Add environment variables.
 	if spec.Env != nil {
 		for _, env := range spec.Env {
-			cntr.definition.Environment[env.Name] = env.Value
+			// Ignore the default pod env vars that k8s adds.
+			if !strings.HasPrefix(env.Name, "KUBERNETES_") {
+				cntr.definition.Environment[env.Name] = env.Value
+			}
 		}
 	}
 

@@ -21,10 +21,12 @@ import (
 
 const (
 	// Provider configuration defaults.
-	defaultCPUCapacity          = "2"
-	defaultMemoryCapacity       = "768Mi"
-	defaultPodCapacity          = "1"
-	defaultNitroEnclaveCapacity = "1"
+	defaultCPUCapacity            = "4"
+	defaultMemoryCapacity         = "1024Mi"
+	defaultReservedCPUCapacity    = "2"
+	defaultReservedMemoryCapacity = "512Mi"
+	defaultPodCapacity            = "10"
+	defaultNitroEnclaveCapacity   = "1"
 
 	// Values used in tracing as attribute keys.
 	namespaceKey     = "namespace"
@@ -46,16 +48,18 @@ type EnclaveProvider struct { //nolint:golint
 	node      *enclavenode.Node
 	config    EnclaveConfig
 	startTime time.Time
-	notifier  func(*v1.Pod)
+	//notifier  func(*v1.Pod)
 }
 
 // EnclaveConfig contains a enclave virtual-kubelet's configurable parameters.
 type EnclaveConfig struct { //nolint:golint
-	CPU        string            `json:"cpu,omitempty"`
-	Memory     string            `json:"memory,omitempty"`
-	Pods       string            `json:"pods,omitempty"`
-	Others     map[string]string `json:"others,omitempty"`
-	ProviderID string            `json:"providerID,omitempty"`
+	CPU            string            `json:"cpu,omitempty"`
+	Memory         string            `json:"memory,omitempty"`
+	ReservedCPU    string            `json:"reservedCpu,omitempty"`
+	ReservedMemory string            `json:"reservedMemory,omitempty"`
+	Pods           string            `json:"pods,omitempty"`
+	Others         map[string]string `json:"others,omitempty"`
+	ProviderID     string            `json:"providerID,omitempty"`
 }
 
 // NewEnclaveProviderEnclaveConfig creates a new EnclaveV0Provider. Enclave legacy provider does not implement the new asynchronous podnotifier interface
@@ -64,8 +68,14 @@ func NewEnclaveProviderEnclaveConfig(ctx context.Context, config EnclaveConfig, 
 	if config.CPU == "" {
 		config.CPU = defaultCPUCapacity
 	}
+	if config.ReservedCPU == "" {
+		config.ReservedCPU = defaultReservedCPUCapacity
+	}
 	if config.Memory == "" {
 		config.Memory = defaultMemoryCapacity
+	}
+	if config.ReservedMemory == "" {
+		config.ReservedMemory = defaultReservedMemoryCapacity
 	}
 	if config.Pods == "" {
 		config.Pods = defaultPodCapacity
@@ -115,8 +125,14 @@ func loadConfig(providerConfig, nodeName string) (config EnclaveConfig, err erro
 		if config.CPU == "" {
 			config.CPU = defaultCPUCapacity
 		}
+		if config.ReservedCPU == "" {
+			config.ReservedCPU = defaultReservedCPUCapacity
+		}
 		if config.Memory == "" {
 			config.Memory = defaultMemoryCapacity
+		}
+		if config.ReservedMemory == "" {
+			config.ReservedMemory = defaultReservedMemoryCapacity
 		}
 		if config.Pods == "" {
 			config.Pods = defaultPodCapacity
@@ -163,7 +179,7 @@ func (p *EnclaveProvider) CreatePod(ctx context.Context, pod *v1.Pod) error {
 	}
 
 	pod.Status = enclavePod.GetStatus()
-	p.notifier(pod)
+	//p.notifier(pod)
 
 	return nil
 }
@@ -204,7 +220,7 @@ func (p *EnclaveProvider) DeletePod(ctx context.Context, pod *v1.Pod) (err error
 		return err
 	}
 
-	p.notifier(pod)
+	//p.notifier(pod)
 
 	return nil
 }
@@ -323,7 +339,7 @@ func (p *EnclaveProvider) ConfigureNode(ctx context.Context, n *v1.Node) { //nol
 		n.Spec.ProviderID = p.config.ProviderID
 	}
 	n.Status.Capacity = p.capacity()
-	n.Status.Allocatable = p.capacity()
+	n.Status.Allocatable = p.allocatable()
 	n.Status.Conditions = p.nodeConditions()
 	n.Status.Addresses = p.nodeAddresses()
 	n.Status.DaemonEndpoints = p.nodeDaemonEndpoints()
@@ -334,6 +350,9 @@ func (p *EnclaveProvider) ConfigureNode(ctx context.Context, n *v1.Node) { //nol
 	n.Status.NodeInfo.OperatingSystem = os
 	n.Status.NodeInfo.Architecture = "amd64"
 	delete(n.ObjectMeta.Labels, "kubernetes.io/role")
+
+	// FIXME
+	n.ObjectMeta.Labels["eks.amazonaws.com/compute-type"] = "fargate"
 	//n.ObjectMeta.Labels["alpha.service-controller.kubernetes.io/exclude-balancer"] = "true"
 	//n.ObjectMeta.Labels["node.kubernetes.io/exclude-from-external-load-balancers"] = "true"
 }
@@ -349,6 +368,15 @@ func (p *EnclaveProvider) capacity() v1.ResourceList {
 	for k, v := range p.config.Others {
 		rl[v1.ResourceName(k)] = resource.MustParse(v)
 	}
+	return rl
+}
+
+// Allocatable returns a resource list containing the allocatable limits.
+func (p *EnclaveProvider) allocatable() v1.ResourceList {
+	rl := p.capacity()
+	// Reserve cpu and memory for non-enclave processes
+	rl.Cpu().Sub(resource.MustParse(p.config.ReservedCPU))
+	rl.Memory().Sub(resource.MustParse(p.config.ReservedMemory))
 	return rl
 }
 
@@ -424,9 +452,9 @@ func (p *EnclaveProvider) nodeDaemonEndpoints() v1.NodeDaemonEndpoints {
 
 // NotifyPods is called to set a pod notifier callback function. This should be called before any operations are done
 // within the provider.
-func (p *EnclaveProvider) NotifyPods(ctx context.Context, notifier func(*v1.Pod)) {
-	p.notifier = notifier
-}
+//func (p *EnclaveProvider) NotifyPods(ctx context.Context, notifier func(*v1.Pod)) {
+//p.notifier = notifier
+//}
 
 func (p *EnclaveProvider) GetMetricsResource(ctx context.Context) ([]*dto.MetricFamily, error) {
 	return nil, errNotImplemented

@@ -83,7 +83,7 @@ func (s VsockLogServer) Serve(l net.Listener) error {
 		var err error
 		l, err = vsock.Listen(s.port, &vsock.Config{})
 		if err != nil {
-			log.Panicln(err)
+			return err
 		}
 		defer closers.Panic(s.baseCtx, l)
 	}
@@ -92,7 +92,8 @@ func (s VsockLogServer) Serve(l net.Listener) error {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			log.Panicln(err)
+			log.Printf("Accept failed: %s", err)
+			return err
 		}
 
 		go handleLogConn(s.baseCtx, s.writer, conn)

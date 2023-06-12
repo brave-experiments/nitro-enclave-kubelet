@@ -141,11 +141,11 @@ func (pod *Pod) Start(ctx context.Context) error {
 		err = fmt.Errorf("failed to build enclave image: %v", err)
 		return err
 	}
+	log.G(ctx).Infof("built eif %s %+v %+v %s", d.Image, append(d.EntryPoint, d.Command...), d.Environment, eif.Name())
 
 	pod.config.EifPath = eif.Name()
 	// FIXME always debug for now
 	pod.config.DebugMode = true
-	log.G(ctx).Infof("built eif image %+v", pod.config)
 
 	// Start the enclave.
 	info, err := cli.RunEnclave(&pod.config)

@@ -1,26 +1,20 @@
 package main
 
 import (
-	"fmt"
 	"log"
+	"os"
 
 	"github.com/brave-experiments/nitro-enclave-kubelet/pkg/build"
-	"github.com/brave-experiments/nitro-enclave-kubelet/pkg/cli"
 )
 
 func main() {
-	err := build.BuildEif("/usr/share/nitro_enclaves/blobs/", "busybox", []string{"/bin/sh", "-c", "watch echo $FOO"}, map[string]string{"FOO": "hello world"}, "hello.eif")
+	file, err := os.CreateTemp("", "bootstrap")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	info, err := cli.RunEnclave(&cli.EnclaveConfig{
-		CPUCount:  2,
-		MemoryMib: 128,
-		EifPath:   "hello.eif",
-	})
+	err = build.BuildEif("/usr/share/nitro_enclaves/blobs/", "busybox", []string{"/bin/sh", "-c", "watch echo $FOO"}, map[string]string{"FOO": "hello world"}, file.Name())
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(info)
 }
