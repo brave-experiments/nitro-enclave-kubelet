@@ -15,6 +15,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8sTypes "k8s.io/apimachinery/pkg/types"
 )
 
@@ -51,8 +52,29 @@ type Pod struct {
 	listeners []net.Listener
 }
 
+func IsOwnedBy(pod *corev1.Pod, gvks []schema.GroupVersionKind) bool {
+	for _, ignoredOwner := range gvks {
+		for _, owner := range pod.ObjectMeta.OwnerReferences {
+			if owner.APIVersion == ignoredOwner.GroupVersion().String() && owner.Kind == ignoredOwner.Kind {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func IsOwnedByDaemonSet(pod *corev1.Pod) bool {
+	return IsOwnedBy(pod, []schema.GroupVersionKind{
+		{Group: "apps", Version: "v1", Kind: "DaemonSet"},
+	})
+}
+
 // NewPod creates a new Kubernetes pod as a Nitro Enclave.
 func NewPod(ctx context.Context, node *Node, pod *corev1.Pod) (*Pod, error) {
+	if IsOwnedByDaemonSet(pod) {
+		return nil, fmt.Errorf("daemonsets are not supported")
+	}
+
 	// Initialize the pod.
 	nitroPod := &Pod{
 		namespace:  pod.Namespace,
