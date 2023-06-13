@@ -48,7 +48,7 @@ type EnclaveProvider struct { //nolint:golint
 	node      *enclavenode.Node
 	config    EnclaveConfig
 	startTime time.Time
-	//notifier  func(*v1.Pod)
+	notifier  func(*v1.Pod)
 }
 
 // EnclaveConfig contains a enclave virtual-kubelet's configurable parameters.
@@ -172,14 +172,14 @@ func (p *EnclaveProvider) CreatePod(ctx context.Context, pod *v1.Pod) error {
 		return err
 	}
 
-	err = enclavePod.Start(ctx)
+	err = enclavePod.Start(ctx, p.notifier)
 	if err != nil {
 		log.G(ctx).Errorf("Failed to start pod: %v.\n", err)
 		return err
 	}
 
 	pod.Status = enclavePod.GetStatus()
-	//p.notifier(pod)
+	p.notifier(pod)
 
 	return nil
 }
@@ -214,13 +214,11 @@ func (p *EnclaveProvider) DeletePod(ctx context.Context, pod *v1.Pod) (err error
 		return err
 	}
 
-	err = enclavePod.Stop()
+	err = enclavePod.Stop(ctx)
 	if err != nil {
 		log.G(ctx).Errorf("Failed to stop pod: %v.\n", err)
 		return err
 	}
-
-	//p.notifier(pod)
 
 	return nil
 }
@@ -452,9 +450,9 @@ func (p *EnclaveProvider) nodeDaemonEndpoints() v1.NodeDaemonEndpoints {
 
 // NotifyPods is called to set a pod notifier callback function. This should be called before any operations are done
 // within the provider.
-//func (p *EnclaveProvider) NotifyPods(ctx context.Context, notifier func(*v1.Pod)) {
-//p.notifier = notifier
-//}
+func (p *EnclaveProvider) NotifyPods(ctx context.Context, notifier func(*v1.Pod)) {
+	p.notifier = notifier
+}
 
 func (p *EnclaveProvider) GetMetricsResource(ctx context.Context) ([]*dto.MetricFamily, error) {
 	return nil, errNotImplemented
