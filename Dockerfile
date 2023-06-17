@@ -31,5 +31,6 @@ RUN mkdir /opt/glibc-2.28 && \
 
 COPY --from=eif_utils /usr/local/cargo/bin/eif_build /bin/eif_build 
 RUN patchelf --set-interpreter /opt/glibc-2.28/lib64/ld-linux-x86-64.so.2 --set-rpath /opt/glibc-2.28/lib64:/usr/lib64 /bin/eif_build
-COPY --from=kubelet /build /bin/build 
-COPY --from=kubelet /vk /bin/vk 
+COPY --from=kubelet /build /bin/build
+COPY --from=kubelet /shell /bin/shell
+COPY --from=kubelet /vk /bin/vk
