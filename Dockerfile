@@ -11,8 +11,9 @@ RUN go mod download
 
 COPY . ./
 
-RUN CGO_ENABLED=0 GOOS=linux go build -o /build ./cmd/build 
-RUN CGO_ENABLED=0 GOOS=linux go build -o /vk ./cmd/vk 
+RUN CGO_ENABLED=0 GOOS=linux go build -o /build ./cmd/build
+RUN CGO_ENABLED=0 GOOS=linux go build -o /shell ./cmd/shell
+RUN CGO_ENABLED=0 GOOS=linux go build -o /vk ./cmd
 
 FROM amazonlinux:2.0.20230207.0
 
