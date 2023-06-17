@@ -30,7 +30,7 @@ func (w *RemoteWriter) Write(p []byte) (n int, err error) {
 	return w.RemoteWriter.Write(p)
 }
 
-func Listen(i, p *string) {
+func Listen(p uint) {
 	ctx := context.Background()
 	cid, err := vsock.ContextID()
 	if err == nil {
@@ -47,8 +47,7 @@ func Listen(i, p *string) {
 		return
 	}
 
-	sock := *i + ":" + *p
-	l, err := net.Listen("tcp", sock)
+	l, err := vsock.Listen(uint32(p), &vsock.Config{})
 	if nil != err {
 		log.Fatalf("Could not bind to interface: %v", err)
 	}
@@ -69,8 +68,8 @@ func Listen(i, p *string) {
 	}
 }
 
-func Connect(i, p *string) {
-	sock := *i + ":" + *p
+func Connect(i *string, p uint) {
+	sock := fmt.Sprintf("%s:%d", *i, p)
 	c, err := net.Dial("tcp", sock)
 	if nil != err {
 		log.Fatalf("Could not open TCP connection: %v", err)
@@ -85,13 +84,13 @@ func Connect(i, p *string) {
 }
 
 func main() {
-	p := flag.String("p", "4444", "Port")
-	l := flag.String("l", "", "Listen interface IP")
+	p := flag.Uint("p", 4444, "Port")
+	l := flag.Bool("l", false, "Listen")
 	c := flag.String("c", "", "Connect IP")
 	flag.Parse()
-	if *l != "" {
-		Listen(l, p)
+	if *l {
+		Listen(*p)
 	} else {
-		Connect(c, p)
+		Connect(c, *p)
 	}
 }
